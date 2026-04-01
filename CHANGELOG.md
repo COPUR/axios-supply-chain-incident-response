@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## v2.0.1 - 2026-04-01
+
+### Security
+- Upgraded `vitest` from `2.1.8` to `2.1.9`.
+- Upgraded `@vitest/coverage-v8` from `2.1.8` to `2.1.9`.
+- Removed previously reported critical advisories affecting the earlier test stack.
+
+### Triage
+- `npm audit` now reports `0 critical`, `0 high`, and `6 moderate` vulnerabilities.
+- Remaining advisories are limited to the Vitest/Vite test toolchain in development dependencies and do not affect production runtime paths.
+- Follow-up major migration to Vitest v4 is tracked for full moderate-vulnerability closure.
+
 ## v2.0.0 - 2026-04-01
 
 ### Added
