@@ -14,6 +14,7 @@
     "guardrail": "node scripts/guardrail.js",
     "guardrail:matrix": "node scripts/run-guardrail-matrix.js",
     "observability:insights": "node scripts/observability-insights.js",
+    "observability:verify": "node scripts/verify-observability.js",
     "publish:guardrail-event": "node scripts/publish-guardrail-event.js",
     "agent:start": "node agent/security-agent.js"
   },

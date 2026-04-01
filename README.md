@@ -169,6 +169,17 @@ Generate improvement recommendations from captured runtime events:
 npm run observability:insights -- --events-file .observability/events.ndjson --output observability-insights.md
 ```
 
+Enforce strict telemetry gate (fails when events are missing/malformed or lifecycle events are absent):
+
+```bash
+npm run observability:verify -- \
+  --events-file .observability/events.ndjson \
+  --expected-tools guardrail_matrix \
+  --min-events 2
+```
+
+CI guardrail workflows enforce this gate and upload `.observability/` as an artifact for incident forensics.
+
 ## Security Principles
 
 - Dependency installation is code execution.
