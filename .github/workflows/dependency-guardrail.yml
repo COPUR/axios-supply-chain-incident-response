@@ -9,6 +9,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      OBSERVABILITY_EVENTS_FILE: .observability/events.ndjson
+      OBSERVABILITY_FORMAT: json
+      OBSERVABILITY_LEVEL: info
+      OBSERVABILITY_SELF_HEAL: "1"
 
     steps:
       - name: Checkout
@@ -23,11 +28,25 @@ jobs:
       - name: Install dependencies (no lifecycle scripts)
         run: npm ci --ignore-scripts
 
+      - name: Initialize observability artifact path
+        run: |
+          set -euo pipefail
+          mkdir -p .observability
+          rm -f "${OBSERVABILITY_EVENTS_FILE}"
+
       - name: Run dependency guardrail
         run: npm run guardrail
         env:
           GUARDRAIL_POLICY_FILE: policies/guardrail-policy.json
           GUARDRAIL_RESULT_FILE: guardrail-result.json
+
+      - name: Enforce observability telemetry gate
+        if: always()
+        run: |
+          npm run observability:verify -- \
+            --events-file "${OBSERVABILITY_EVENTS_FILE}" \
+            --expected-tools guardrail \
+            --min-events 2
 
       - name: Upload guardrail artifact
         if: always()
@@ -35,6 +54,13 @@ jobs:
         with:
           name: guardrail-result
           path: guardrail-result.json
+
+      - name: Upload observability events
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: observability-events-guardrail
+          path: .observability/events.ndjson
 
       - name: Publish Kafka event on quarantine/block
         if: failure() || cancelled()

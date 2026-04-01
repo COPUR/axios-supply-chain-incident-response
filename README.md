@@ -99,7 +99,8 @@ npm run guardrail:matrix -- \
   --roots /path/to/repos \
   --output-dir guardrail-matrix-output \
   --policy-file policies/guardrail-policy.json \
-  --denylist-only
+  --denylist-only \
+  --max-workers 4
 ```
 
 For full mode with cache and age checks:
@@ -126,6 +127,7 @@ Artifact hygiene:
 Performance note:
 - `full` mode can be expensive on large lockfiles if age policy is evaluated for every transitive package.
 - Use `--age-scope direct` for practical CI execution while keeping denylist checks on all resolved packages.
+- Use `--max-workers` to parallelize lockfile checks and reduce wall-clock runtime for large mono-repo fleets.
 
 ## Security Event Pipeline
 
@@ -148,6 +150,35 @@ npm test
 ```
 
 Coverage gates are enforced at `95%+` globally for statements, lines, and branches.
+
+## Observability, Self-Heal, Self-Improve
+
+Enable structured runtime telemetry and optional self-heal:
+
+```bash
+OBSERVABILITY_EVENTS_FILE=.observability/events.ndjson \
+OBSERVABILITY_FORMAT=json \
+OBSERVABILITY_LEVEL=info \
+OBSERVABILITY_SELF_HEAL=1 \
+npm run guardrail:matrix -- --roots /path/to/repos --denylist-only --max-workers 4
+```
+
+Generate improvement recommendations from captured runtime events:
+
+```bash
+npm run observability:insights -- --events-file .observability/events.ndjson --output observability-insights.md
+```
+
+Enforce strict telemetry gate (fails when events are missing/malformed or lifecycle events are absent):
+
+```bash
+npm run observability:verify -- \
+  --events-file .observability/events.ndjson \
+  --expected-tools guardrail_matrix \
+  --min-events 2
+```
+
+CI guardrail workflows enforce this gate and upload `.observability/` as an artifact for incident forensics.
 
 ## Security Principles
 

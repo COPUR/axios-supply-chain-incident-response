@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 
 import { anonymizePath, sanitizeText } from './anonymize.js';
 import { LOCKFILE_NAMES } from './lockfile-utils.js';
@@ -129,6 +129,52 @@ function csvEscape(value) {
   return str;
 }
 
+function runGuardrailChildProcess(scriptPath, { cwd, env, timeoutMs }) {
+  return new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+
+    const child = spawn(process.execPath, [scriptPath], {
+      cwd,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, timeoutMs);
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      resolve({
+        status: 1,
+        stdout,
+        stderr: `${stderr}${String(error?.message || error)}`,
+        error,
+      });
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({
+        status: code ?? 1,
+        stdout,
+        stderr,
+        error: timedOut ? { code: 'ETIMEDOUT' } : null,
+      });
+    });
+  });
+}
+
 async function writeCsv(filePath, rows, headers) {
   const lines = [headers.join(',')];
   for (const row of rows) {
@@ -152,6 +198,7 @@ export async function runGuardrailMatrix(options = {}) {
     excludeSubstring = [],
     exitOn = 'all',
     anonymizeOutput = true,
+    maxWorkers = 1,
     cwd = process.cwd(),
     env = process.env,
     logger = console.log,
@@ -186,6 +233,7 @@ export async function runGuardrailMatrix(options = {}) {
 
   const rows = [];
   const repoAliases = new Map();
+  const normalizedWorkers = Math.max(1, Math.floor(Number(maxWorkers) || 1));
 
   const getRepoAlias = (repoRoot) => {
     if (!repoRoot) {
@@ -201,8 +249,7 @@ export async function runGuardrailMatrix(options = {}) {
 
   const scriptPath = path.resolve(cwd, guardrailScript);
 
-  for (let idx = 0; idx < lockfiles.length; idx += 1) {
-    const lockfile = lockfiles[idx];
+  const processLockfile = async (idx, lockfile) => {
     const projectDir = path.dirname(lockfile);
     const repoRoot = gitTopLevel(projectDir);
     const hash = crypto.createHash('sha256').update(lockfile).digest('hex').slice(0, 16);
@@ -223,11 +270,10 @@ export async function runGuardrailMatrix(options = {}) {
     }
 
     const startedAt = Date.now();
-    const proc = spawnSync(process.execPath, [scriptPath], {
+    const proc = await runGuardrailChildProcess(scriptPath, {
       cwd: projectDir,
       env: childEnv,
-      encoding: 'utf8',
-      timeout: runnerTimeoutSeconds * 1000,
+      timeoutMs: runnerTimeoutSeconds * 1000,
     });
 
     const durationSeconds = Number(((Date.now() - startedAt) / 1000).toFixed(2));
@@ -280,12 +326,33 @@ export async function runGuardrailMatrix(options = {}) {
       row.stderr_tail = sanitizeText(row.stderr_tail);
     }
 
-    rows.push(row);
     logger(
       `[${idx + 1}/${lockfiles.length}] ${status.toUpperCase()} mode=${mode} `
       + `age_scope=${resolvedAgeScope} blocked=${blockedCount} quarantined=${quarantinedCount} `
       + `errors=${errorsCount} path=${row.lockfile}`,
     );
+    return {
+      idx,
+      row,
+    };
+  };
+
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(normalizedWorkers, lockfiles.length) }, async () => {
+    const localRows = [];
+    while (cursor < lockfiles.length) {
+      const idx = cursor;
+      cursor += 1;
+      const processed = await processLockfile(idx, lockfiles[idx]);
+      localRows.push(processed);
+    }
+    return localRows;
+  });
+
+  const workerResults = await Promise.all(workers);
+  const flattened = workerResults.flat().sort((a, b) => a.idx - b.idx);
+  for (const item of flattened) {
+    rows.push(item.row);
   }
 
   const headers = [
@@ -314,6 +381,7 @@ export async function runGuardrailMatrix(options = {}) {
   const aggregate = {
     output_dir: outputDirAbs,
     lockfile_count: lockfiles.length,
+    worker_count: normalizedWorkers,
     anonymized_output: anonymizeOutput,
     status_counts: statusCounts,
     rows,
@@ -347,6 +415,7 @@ export async function runGuardrailMatrix(options = {}) {
   return {
     exitCode,
     lockfileCount: lockfiles.length,
+    workerCount: normalizedWorkers,
     statusCounts,
     summaryCsv,
     summaryJson,

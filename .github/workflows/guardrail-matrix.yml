@@ -34,6 +34,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      OBSERVABILITY_EVENTS_FILE: .observability/events.ndjson
+      OBSERVABILITY_FORMAT: json
+      OBSERVABILITY_LEVEL: info
+      OBSERVABILITY_SELF_HEAL: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,6 +51,12 @@ jobs:
 
       - name: Install dependencies (no lifecycle scripts)
         run: npm ci --ignore-scripts
+
+      - name: Initialize observability artifact path
+        run: |
+          set -euo pipefail
+          mkdir -p .observability
+          rm -f "${OBSERVABILITY_EVENTS_FILE}"
 
       - name: Restore guardrail metadata cache
         uses: actions/cache@v4
@@ -85,9 +96,31 @@ jobs:
 
           node scripts/run-guardrail-matrix.js "${args[@]}"
 
+      - name: Enforce observability telemetry gate
+        if: always()
+        run: |
+          npm run observability:verify -- \
+            --events-file "${OBSERVABILITY_EVENTS_FILE}" \
+            --expected-tools guardrail_matrix \
+            --min-events 2
+
+      - name: Generate observability insights
+        if: always()
+        run: |
+          npm run observability:insights -- \
+            --events-file "${OBSERVABILITY_EVENTS_FILE}" \
+            --output .observability/insights.md
+
       - name: Upload guardrail matrix artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: guardrail-matrix-output
           path: guardrail-ci-output
+
+      - name: Upload observability artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: observability-guardrail-matrix
+          path: .observability

@@ -13,6 +13,8 @@
     "scan": "node scripts/incident-scan.js",
     "guardrail": "node scripts/guardrail.js",
     "guardrail:matrix": "node scripts/run-guardrail-matrix.js",
+    "observability:insights": "node scripts/observability-insights.js",
+    "observability:verify": "node scripts/verify-observability.js",
     "publish:guardrail-event": "node scripts/publish-guardrail-event.js",
     "agent:start": "node agent/security-agent.js"
   },
@@ -23,5 +25,8 @@
   "devDependencies": {
     "@vitest/coverage-v8": "2.1.8",
     "vitest": "2.1.8"
+  },
+  "overrides": {
+    "minimatch": "10.2.4"
   }
 }
