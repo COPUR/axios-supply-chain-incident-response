@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import argparse
 import csv
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -75,6 +77,32 @@ def git_toplevel(path: Path) -> str:
         return ""
 
 
+def sanitize_text(value: str) -> str:
+    redacted = value
+    home = str(Path.home())
+    if home:
+        redacted = redacted.replace(home, "$HOME")
+    redacted = re.sub(r"/Users/[^/]+", "/Users/<redacted>", redacted)
+    redacted = re.sub(r"/home/[^/]+", "/home/<redacted>", redacted)
+    redacted = re.sub(r"([A-Za-z]:\\\\Users\\\\)[^\\\\]+", r"\1<redacted>", redacted)
+    redacted = re.sub(r"([A-Za-z]:\\\\Documents and Settings\\\\)[^\\\\]+", r"\1<redacted>", redacted)
+    return redacted
+
+
+def anonymize_path(path_value: str, repo_root: str, repo_alias: str) -> str:
+    if not path_value:
+        return path_value
+    if repo_root:
+        try:
+            rel = Path(path_value).resolve().relative_to(Path(repo_root).resolve()).as_posix()
+            if rel == ".":
+                return repo_alias
+            return f"{repo_alias}/{rel}"
+        except ValueError:
+            pass
+    return sanitize_text(path_value)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run guardrail checks for every Node lockfile.")
     parser.add_argument("--roots", nargs="+", default=["."], help="Root paths to discover lockfiles from.")
@@ -118,6 +146,11 @@ def parse_args() -> argparse.Namespace:
         default="all",
         help="Exit policy: fail on all non-allow statuses or only on block.",
     )
+    parser.add_argument(
+        "--no-anonymize-output",
+        action="store_true",
+        help="Disable anonymization/redaction in summary outputs.",
+    )
     return parser.parse_args()
 
 
@@ -146,13 +179,23 @@ def main() -> int:
     guardrail_script = Path(args.guardrail_script).resolve()
     policy_file = Path(args.policy_file).resolve()
     cache_file = Path(args.cache_file).resolve()
+    anonymize_output = not args.no_anonymize_output
 
     rows: List[Dict[str, object]] = []
+    repo_aliases: Dict[str, str] = {}
+
+    def get_repo_alias(repo_root: str) -> str:
+        if not repo_root:
+            return "<REPO_UNKNOWN>"
+        if repo_root not in repo_aliases:
+            repo_aliases[repo_root] = f"<REPO_{len(repo_aliases) + 1}>"
+        return repo_aliases[repo_root]
 
     for idx, lockfile in enumerate(lockfiles, start=1):
         project_dir = lockfile.parent
         repo_root = git_toplevel(project_dir)
-        safe_name = str(lockfile).replace("/", "__").replace(":", "_")
+        lock_hash = hashlib.sha256(str(lockfile).encode("utf-8")).hexdigest()[:16]
+        safe_name = f"lockfile-{idx:04d}-{lock_hash}"
         result_file = results_dir / f"{safe_name}.json"
 
         env = os.environ.copy()
@@ -223,11 +266,19 @@ def main() -> int:
             "duration_seconds": duration,
             "stderr_tail": "\n".join(str(proc.stderr).strip().splitlines()[-3:]) if proc.stderr else "",
         }
+
+        if anonymize_output:
+            repo_alias = get_repo_alias(repo_root)
+            row["repo_root"] = repo_alias
+            row["project_dir"] = anonymize_path(str(project_dir), repo_root, repo_alias)
+            row["lockfile"] = anonymize_path(str(lockfile), repo_root, repo_alias)
+            row["stderr_tail"] = sanitize_text(str(row["stderr_tail"]))
+
         rows.append(row)
         print(
             f"[{idx}/{len(lockfiles)}] {status.upper()} mode={mode} "
             f"age_scope={age_scope} blocked={blocked} quarantined={quarantined} errors={errors} "
-            f"path={lockfile}"
+            f"path={row['lockfile']}"
         )
 
     with summary_csv.open("w", newline="", encoding="utf-8") as f:
@@ -255,6 +306,7 @@ def main() -> int:
     aggregate = {
         "output_dir": str(output_dir),
         "lockfile_count": len(lockfiles),
+        "anonymized_output": anonymize_output,
         "status_counts": {},
         "rows": rows,
     }

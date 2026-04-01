@@ -10,6 +10,7 @@ guardrail-result.json
 scan-report.json
 scan-report.md
 .guardrail-cache/
+.guardrail-npm-metadata-cache.json
 guardrail-run-*/
 guardrail-ci-output/
 guardrail-matrix-output/
@@ -17,3 +18,7 @@ all-lockfiles.txt
 all-lockfiles-filtered.txt
 local-*-report.json
 local-*-report.md
+hygiene-*.json
+hygiene-*.md
+hygiene-*-out/
+hygiene-*.txt

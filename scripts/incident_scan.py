@@ -4,7 +4,7 @@ import json
 import os
 import re
 import sys
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, replace
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
@@ -447,6 +447,71 @@ def build_preventive_measures() -> List[str]:
     ]
 
 
+def build_root_aliases(roots: List[Path]) -> Dict[str, str]:
+    aliases: Dict[str, str] = {}
+    normalized_roots = sorted({str(root.resolve()) for root in roots})
+    for idx, root in enumerate(normalized_roots, start=1):
+        aliases[root] = f"<SCAN_ROOT_{idx}>"
+    return aliases
+
+
+def sanitize_text(value: str, root_aliases: Dict[str, str]) -> str:
+    redacted = value
+
+    for root, alias in sorted(root_aliases.items(), key=lambda item: len(item[0]), reverse=True):
+        redacted = redacted.replace(root, alias)
+
+    home = str(Path.home())
+    if home:
+        redacted = redacted.replace(home, "$HOME")
+
+    redacted = re.sub(r"/Users/[^/]+", "/Users/<redacted>", redacted)
+    redacted = re.sub(r"/home/[^/]+", "/home/<redacted>", redacted)
+    redacted = re.sub(r"([A-Za-z]:\\\\Users\\\\)[^\\\\]+", r"\1<redacted>", redacted)
+    redacted = re.sub(r"([A-Za-z]:\\\\Documents and Settings\\\\)[^\\\\]+", r"\1<redacted>", redacted)
+
+    return redacted
+
+
+def anonymize_project_finding(project: ProjectFinding, root_aliases: Dict[str, str]) -> ProjectFinding:
+    return replace(
+        project,
+        root=sanitize_text(project.root, root_aliases),
+        lockfile_paths=[sanitize_text(path, root_aliases) for path in project.lockfile_paths],
+        uncertainty_flags=[sanitize_text(flag, root_aliases) for flag in project.uncertainty_flags],
+        malicious_dependency_hits=[
+            sanitize_text(hit, root_aliases) for hit in project.malicious_dependency_hits
+        ],
+    )
+
+
+def anonymize_scan_result(result: ScanResult, roots: List[Path]) -> ScanResult:
+    root_aliases = build_root_aliases(roots)
+
+    return replace(
+        result,
+        evidence=[sanitize_text(item, root_aliases) for item in result.evidence],
+        direct_compromise_evidence=[
+            sanitize_text(item, root_aliases) for item in result.direct_compromise_evidence
+        ],
+        uncertainty_evidence=[sanitize_text(item, root_aliases) for item in result.uncertainty_evidence],
+        impacted_projects=[anonymize_project_finding(project, root_aliases) for project in result.impacted_projects],
+        direct_impacted_projects=[
+            anonymize_project_finding(project, root_aliases) for project in result.direct_impacted_projects
+        ],
+        uncertainty_impacted_projects=[
+            anonymize_project_finding(project, root_aliases) for project in result.uncertainty_impacted_projects
+        ],
+        ci_pipelines_with_npm_install=[
+            sanitize_text(path, root_aliases) for path in result.ci_pipelines_with_npm_install
+        ],
+        probable_secret_exposures=[
+            sanitize_text(item, root_aliases) for item in result.probable_secret_exposures
+        ],
+        lateral_movement_paths=[sanitize_text(item, root_aliases) for item in result.lateral_movement_paths],
+    )
+
+
 def render_markdown(result: ScanResult) -> str:
     impacted_paths = [p.root for p in result.impacted_projects]
     direct_impacted_paths = [p.root for p in result.direct_impacted_projects]
@@ -686,6 +751,11 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional structured JSON output path.",
     )
+    parser.add_argument(
+        "--no-anonymize-output",
+        action="store_true",
+        help="Disable output anonymization/redaction (not recommended).",
+    )
     return parser.parse_args()
 
 
@@ -694,6 +764,8 @@ def main() -> int:
     roots = [Path(root).resolve() for root in args.roots]
 
     result = run_scan(roots)
+    if not args.no_anonymize_output:
+        result = anonymize_scan_result(result, roots)
     markdown = render_markdown(result)
 
     if args.output:

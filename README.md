@@ -17,6 +17,10 @@ This repository provides:
 python3 scripts/incident_scan.py --roots /path/to/repos --output report.md --json-out report.json
 ```
 
+Output hygiene:
+- Report output is anonymized/redacted by default (paths and usernames).
+- To disable redaction for internal-only debugging, use `--no-anonymize-output`.
+
 The scanner prints a report in this format:
 - SECTION 1: Detection Result
 - SECTION 2: Risk Level
@@ -49,7 +53,8 @@ The JSON output also includes:
 │   └── security-agent-deployment.yaml
 └── .github/workflows/
     ├── dependency-guardrail.yml
-    └── guardrail-matrix.yml
+    ├── guardrail-matrix.yml
+    └── python-tests.yml
 ```
 
 ## Detection Scope
@@ -101,6 +106,11 @@ Artifacts:
 - `summary.csv`
 - `summary.json`
 - `results/*.json` (one per lockfile)
+
+Artifact hygiene:
+- Matrix output is anonymized/redacted by default.
+- Result filenames are path-safe hashes (no host path leakage).
+- To disable redaction for internal-only debugging, use `--no-anonymize-output`.
 
 Performance note:
 - `full` mode can be expensive on large lockfiles if age policy is evaluated for every transitive package.
