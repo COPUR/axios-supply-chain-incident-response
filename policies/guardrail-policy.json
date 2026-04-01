@@ -1,0 +1,11 @@
+{
+  "min_package_age_hours": 48,
+  "strict_mode": true,
+  "denylist": {
+    "axios": ["1.14.1", "0.30.4"],
+    "plain-crypto-js": ["4.2.1"]
+  },
+  "allowlist": [
+    "@yourorg/*"
+  ]
+}

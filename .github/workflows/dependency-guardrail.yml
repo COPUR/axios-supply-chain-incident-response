@@ -1,0 +1,47 @@
+name: dependency-guardrail
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  guardrail:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run dependency guardrail
+        run: |
+          python3 scripts/guardrail.py
+        env:
+          GUARDRAIL_POLICY_FILE: policies/guardrail-policy.json
+          GUARDRAIL_RESULT_FILE: guardrail-result.json
+
+      - name: Upload guardrail artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guardrail-result
+          path: guardrail-result.json
+
+      - name: Publish Kafka event on quarantine/block
+        if: failure() || cancelled()
+        run: |
+          pip install confluent-kafka
+          python3 scripts/publish_guardrail_event.py
+        env:
+          KAFKA_BOOTSTRAP_SERVERS: ${{ secrets.KAFKA_BOOTSTRAP_SERVERS }}
+          KAFKA_TOPIC: security.dependency.events
+          GUARDRAIL_RESULT_FILE: guardrail-result.json
+          CI_PIPELINE_ID: ${{ github.run_id }}
+          CI_REPOSITORY: ${{ github.repository }}
+          CI_COMMIT_SHA: ${{ github.sha }}
