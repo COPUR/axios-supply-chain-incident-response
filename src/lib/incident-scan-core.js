@@ -45,6 +45,10 @@ export const SKIP_DIRS = new Set([
   '.gradle',
 ]);
 
+const PNPM_LOCKFILE_NAME = 'pnpm-lock.yaml';
+const PNPM_WORKSPACE_FILE_NAME = 'pnpm-workspace.yaml';
+const SEMVER_EXACT_PATTERN = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+
 export const TEXT_FILE_EXTENSIONS = new Set([
   '.env',
   '.txt',
@@ -79,6 +83,285 @@ export async function safeReadText(filePath) {
   } catch {
     return null;
   }
+}
+
+function unquoteYamlScalar(value) {
+  const trimmed = String(value || '').trim();
+  if ((trimmed.startsWith("'") && trimmed.endsWith("'"))
+    || (trimmed.startsWith('"') && trimmed.endsWith('"'))) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+export function parsePnpmLockPackages(lockText) {
+  const found = new Set();
+
+  for (const rawLine of String(lockText || '').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line.endsWith(':') || line.startsWith('- ')) {
+      continue;
+    }
+
+    let key = line.slice(0, -1);
+    if (key.startsWith('/')) {
+      key = key.slice(1);
+    }
+
+    const peerInfoIndex = key.indexOf('(');
+    if (peerInfoIndex > 0) {
+      key = key.slice(0, peerInfoIndex);
+    }
+
+    const atIndex = key.lastIndexOf('@');
+    if (atIndex <= 0) {
+      continue;
+    }
+
+    const name = key.slice(0, atIndex);
+    const version = key.slice(atIndex + 1);
+    if (!name || !SEMVER_EXACT_PATTERN.test(version)) {
+      continue;
+    }
+
+    found.add(`${name}@@${version}`);
+  }
+
+  return [...found]
+    .map((item) => item.split('@@'))
+    .sort(([aName, aVersion], [bName, bVersion]) => {
+      if (aName === bName) {
+        return aVersion.localeCompare(bVersion);
+      }
+      return aName.localeCompare(bName);
+    });
+}
+
+export function parsePnpmWorkspaceCatalogs(workspaceText) {
+  const catalogs = {};
+  let section = '';
+  let activeCatalog = '';
+
+  const ensureCatalog = (name) => {
+    if (!catalogs[name]) {
+      catalogs[name] = {};
+    }
+  };
+
+  for (const rawLine of String(workspaceText || '').split(/\r?\n/)) {
+    if (!rawLine.trim() || rawLine.trim().startsWith('#')) {
+      continue;
+    }
+
+    const indent = rawLine.match(/^ */)?.[0]?.length || 0;
+    const line = rawLine.trim();
+
+    if (indent === 0) {
+      if (line === 'catalog:') {
+        section = 'catalog';
+        activeCatalog = 'default';
+        ensureCatalog(activeCatalog);
+      } else if (line === 'catalogs:') {
+        section = 'catalogs';
+        activeCatalog = '';
+      } else {
+        section = '';
+        activeCatalog = '';
+      }
+      continue;
+    }
+
+    if (section === 'catalog') {
+      if (indent < 2) {
+        section = '';
+        activeCatalog = '';
+        continue;
+      }
+
+      if (indent === 2) {
+        const match = line.match(/^(.+?):\s*(.+)$/);
+        if (match) {
+          const pkg = unquoteYamlScalar(match[1]);
+          const version = unquoteYamlScalar(match[2]);
+          if (pkg && version) {
+            catalogs.default[pkg] = version;
+          }
+        }
+      }
+      continue;
+    }
+
+    if (section === 'catalogs') {
+      if (indent < 2) {
+        section = '';
+        activeCatalog = '';
+        continue;
+      }
+
+      if (indent === 2) {
+        const catalogMatch = line.match(/^(.+?):\s*$/);
+        if (catalogMatch) {
+          activeCatalog = unquoteYamlScalar(catalogMatch[1]);
+          ensureCatalog(activeCatalog);
+        }
+        continue;
+      }
+
+      if (indent === 4 && activeCatalog) {
+        const pkgMatch = line.match(/^(.+?):\s*(.+)$/);
+        if (pkgMatch) {
+          const pkg = unquoteYamlScalar(pkgMatch[1]);
+          const version = unquoteYamlScalar(pkgMatch[2]);
+          if (pkg && version) {
+            catalogs[activeCatalog][pkg] = version;
+          }
+        }
+      }
+    }
+  }
+
+  return catalogs;
+}
+
+export function parsePnpmLockCatalogs(lockText) {
+  const catalogs = {};
+  let inCatalogs = false;
+  let activeCatalog = '';
+  let activePackage = '';
+
+  const ensureCatalog = (name) => {
+    if (!catalogs[name]) {
+      catalogs[name] = {};
+    }
+  };
+
+  for (const rawLine of String(lockText || '').split(/\r?\n/)) {
+    if (!rawLine.trim() || rawLine.trim().startsWith('#')) {
+      continue;
+    }
+
+    const indent = rawLine.match(/^ */)?.[0]?.length || 0;
+    const line = rawLine.trim();
+
+    if (indent === 0) {
+      if (line === 'catalogs:') {
+        inCatalogs = true;
+        activeCatalog = '';
+        activePackage = '';
+      } else {
+        inCatalogs = false;
+        activeCatalog = '';
+        activePackage = '';
+      }
+      continue;
+    }
+
+    if (!inCatalogs) {
+      continue;
+    }
+
+    if (indent === 2) {
+      const catalogMatch = line.match(/^(.+?):\s*$/);
+      if (catalogMatch) {
+        activeCatalog = unquoteYamlScalar(catalogMatch[1]);
+        activePackage = '';
+        ensureCatalog(activeCatalog);
+      }
+      continue;
+    }
+
+    if (indent === 4) {
+      const packageMatch = line.match(/^(.+?):\s*$/);
+      if (packageMatch) {
+        activePackage = unquoteYamlScalar(packageMatch[1]);
+      }
+      continue;
+    }
+
+    if (indent === 6 && line.startsWith('version:') && activeCatalog && activePackage) {
+      const version = unquoteYamlScalar(line.slice('version:'.length));
+      if (version) {
+        catalogs[activeCatalog][activePackage] = version;
+      }
+    }
+  }
+
+  return catalogs;
+}
+
+function findNearestFile(startDir, fileName) {
+  let current = path.resolve(startDir);
+  while (true) {
+    const candidate = path.join(current, fileName);
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+  return '';
+}
+
+function mergeCatalogMaps(primary = {}, secondary = {}) {
+  const merged = {};
+
+  for (const [catalogName, values] of Object.entries(secondary)) {
+    if (!merged[catalogName]) {
+      merged[catalogName] = {};
+    }
+    Object.assign(merged[catalogName], values || {});
+  }
+
+  for (const [catalogName, values] of Object.entries(primary)) {
+    if (!merged[catalogName]) {
+      merged[catalogName] = {};
+    }
+    Object.assign(merged[catalogName], values || {});
+  }
+
+  return merged;
+}
+
+async function getProjectCatalogMap(projectRoot, catalogCache) {
+  const pnpmWorkspacePath = findNearestFile(projectRoot, PNPM_WORKSPACE_FILE_NAME);
+  const pnpmLockPath = findNearestFile(projectRoot, PNPM_LOCKFILE_NAME);
+  const workspaceRoot = pnpmWorkspacePath
+    ? path.dirname(pnpmWorkspacePath)
+    : (pnpmLockPath ? path.dirname(pnpmLockPath) : '');
+
+  if (!workspaceRoot) {
+    return {};
+  }
+
+  if (catalogCache.has(workspaceRoot)) {
+    return catalogCache.get(workspaceRoot);
+  }
+
+  const workspaceCatalogs = pnpmWorkspacePath
+    ? parsePnpmWorkspaceCatalogs(await safeReadText(pnpmWorkspacePath))
+    : {};
+
+  const lockCatalogs = pnpmLockPath
+    ? parsePnpmLockCatalogs(await safeReadText(pnpmLockPath))
+    : {};
+
+  const merged = mergeCatalogMaps(workspaceCatalogs, lockCatalogs);
+  catalogCache.set(workspaceRoot, merged);
+  return merged;
+}
+
+async function resolveCatalogVersion(projectRoot, packageName, declaredVersion, catalogCache) {
+  const raw = String(declaredVersion || '');
+  if (!raw.startsWith('catalog:')) {
+    return '';
+  }
+
+  const requestedCatalog = raw.slice('catalog:'.length).trim() || 'default';
+  const catalogs = await getProjectCatalogMap(projectRoot, catalogCache);
+  return String(catalogs?.[requestedCatalog]?.[packageName] || '').trim();
 }
 
 export async function safeLoadJson(filePath) {
@@ -198,6 +481,20 @@ export async function parseLockfiles(projectRoot) {
     const extracted = extractPackagesFromLock(data);
     for (const [name, version] of extracted) {
       packages.add(`${name}@@${version}`);
+    }
+  }
+
+  const pnpmLockPath = findNearestFile(projectRoot, PNPM_LOCKFILE_NAME);
+  if (pnpmLockPath && !parsedLockfiles.includes(pnpmLockPath)) {
+    const pnpmLockText = await safeReadText(pnpmLockPath);
+    if (pnpmLockText == null) {
+      errors.push(`could_not_parse:${pnpmLockPath}`);
+    } else {
+      parsedLockfiles.push(pnpmLockPath);
+      const pnpmPackages = parsePnpmLockPackages(pnpmLockText);
+      for (const [name, version] of pnpmPackages) {
+        packages.add(`${name}@@${version}`);
+      }
     }
   }
 
@@ -455,6 +752,7 @@ export function projectIsImpacted(project) {
 export async function scanProjects(projects) {
   const findings = [];
   const scanErrors = [];
+  const catalogCache = new Map();
 
   for (const projectRoot of projects) {
     const finding = {
@@ -508,7 +806,27 @@ export async function scanProjects(projects) {
     }
 
     for (const declaredVersion of finding.axios_declared_versions) {
-      if (MALICIOUS_AXIOS_VERSIONS.has(declaredVersion)) {
+      if (declaredVersion.startsWith('catalog:')) {
+        const catalogResolvedVersion = await resolveCatalogVersion(
+          projectRoot,
+          'axios',
+          declaredVersion,
+          catalogCache,
+        );
+        if (!catalogResolvedVersion) {
+          finding.uncertainty_flags.push(`unresolved_catalog_spec:${declaredVersion}`);
+        } else {
+          if (!finding.axios_versions_in_lock.includes(catalogResolvedVersion)) {
+            finding.axios_versions_in_lock.push(catalogResolvedVersion);
+          }
+          if (MALICIOUS_AXIOS_VERSIONS.has(catalogResolvedVersion)) {
+            finding.malicious_axios_versions.push(catalogResolvedVersion);
+          }
+          if (!isExactSemver(catalogResolvedVersion)) {
+            finding.uncertainty_flags.push(`non_exact_catalog_resolution:${declaredVersion}->${catalogResolvedVersion}`);
+          }
+        }
+      } else if (MALICIOUS_AXIOS_VERSIONS.has(declaredVersion)) {
         finding.malicious_axios_versions.push(declaredVersion);
       } else if (!isExactSemver(declaredVersion)) {
         finding.uncertainty_flags.push(`non_exact_axios_version_spec:${declaredVersion}`);
@@ -526,6 +844,7 @@ export async function scanProjects(projects) {
       || finding.plain_crypto_node_modules_present
       || finding.uncertainty_flags.length > 0
     ) {
+      finding.axios_versions_in_lock = [...new Set(finding.axios_versions_in_lock)].sort();
       finding.malicious_axios_versions = [...new Set(finding.malicious_axios_versions)].sort();
       finding.malicious_dependency_hits = [...new Set(finding.malicious_dependency_hits)].sort();
       finding.uncertainty_flags = [...new Set(finding.uncertainty_flags)].sort();
