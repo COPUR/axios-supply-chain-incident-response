@@ -89,6 +89,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--denylist-only", action="store_true", help="Enable denylist-only mode.")
     parser.add_argument(
+        "--age-scope",
+        choices=["all", "direct"],
+        default="all",
+        help="Scope for package age checks in full mode.",
+    )
+    parser.add_argument(
         "--http-timeout-seconds",
         type=int,
         default=10,
@@ -154,6 +160,7 @@ def main() -> int:
         env["GUARDRAIL_RESULT_FILE"] = str(result_file)
         env["GUARDRAIL_CACHE_FILE"] = str(cache_file)
         env["GUARDRAIL_HTTP_TIMEOUT_SECONDS"] = str(args.http_timeout_seconds)
+        env["GUARDRAIL_AGE_SCOPE"] = args.age_scope
         if args.denylist_only:
             env["GUARDRAIL_DENYLIST_ONLY"] = "1"
 
@@ -181,6 +188,7 @@ def main() -> int:
 
         status = "timeout" if timed_out else "error"
         mode = "unknown"
+        age_scope = "unknown"
         blocked = 0
         quarantined = 0
         allowed = 0
@@ -191,6 +199,7 @@ def main() -> int:
                 payload = json.loads(result_file.read_text(encoding="utf-8"))
                 status = payload.get("status", status)
                 mode = payload.get("mode", mode)
+                age_scope = payload.get("age_scope", age_scope)
                 summary = payload.get("summary", {})
                 blocked = int(summary.get("blocked_count", 0) or 0)
                 quarantined = int(summary.get("quarantined_count", 0) or 0)
@@ -204,6 +213,7 @@ def main() -> int:
             "project_dir": str(project_dir),
             "lockfile": str(lockfile),
             "mode": mode,
+            "age_scope": age_scope,
             "status": status,
             "exit_code": proc.returncode,
             "blocked_count": blocked,
@@ -216,7 +226,7 @@ def main() -> int:
         rows.append(row)
         print(
             f"[{idx}/{len(lockfiles)}] {status.upper()} mode={mode} "
-            f"blocked={blocked} quarantined={quarantined} errors={errors} "
+            f"age_scope={age_scope} blocked={blocked} quarantined={quarantined} errors={errors} "
             f"path={lockfile}"
         )
 
@@ -228,6 +238,7 @@ def main() -> int:
                 "project_dir",
                 "lockfile",
                 "mode",
+                "age_scope",
                 "status",
                 "exit_code",
                 "blocked_count",

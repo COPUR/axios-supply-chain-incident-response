@@ -66,6 +66,32 @@ def extract_packages_from_lock(lock_data: Dict[str, Any]) -> List[Tuple[str, str
     return sorted(found)
 
 
+def extract_direct_packages_from_lock(lock_data: Dict[str, Any]) -> List[Tuple[str, str]]:
+    found: Set[Tuple[str, str]] = set()
+
+    lock_packages = lock_data.get("packages")
+    if isinstance(lock_packages, dict):
+        root_meta = lock_packages.get("", {})
+        if isinstance(root_meta, dict):
+            for section in ("dependencies", "optionalDependencies"):
+                deps = root_meta.get(section, {})
+                if not isinstance(deps, dict):
+                    continue
+                for name in deps.keys():
+                    dep_meta = lock_packages.get(f"node_modules/{name}", {})
+                    if isinstance(dep_meta, dict) and dep_meta.get("version"):
+                        found.add((str(name), str(dep_meta["version"])))
+
+    # Fallback for lockfile v1 style where top-level dependencies map direct deps.
+    deps = lock_data.get("dependencies", {})
+    if isinstance(deps, dict):
+        for name, meta in deps.items():
+            if isinstance(meta, dict) and meta.get("version"):
+                found.add((str(name), str(meta["version"])))
+
+    return sorted(found)
+
+
 def is_allowlisted(name: str, allowlist: List[str]) -> bool:
     for pattern in allowlist:
         if pattern.endswith("/*"):
@@ -162,12 +188,22 @@ def main() -> int:
     use_cache = not is_truthy(os.environ.get("GUARDRAIL_DISABLE_CACHE", ""))
     cache_file = os.environ.get("GUARDRAIL_CACHE_FILE", ".guardrail-npm-metadata-cache.json")
     http_timeout_seconds = int(os.environ.get("GUARDRAIL_HTTP_TIMEOUT_SECONDS", "10"))
+    age_scope = os.environ.get("GUARDRAIL_AGE_SCOPE", "all").strip().lower() or "all"
+    if age_scope not in {"all", "direct"}:
+        age_scope = "all"
     cache: Dict[str, Dict[str, Any]] = load_cache(cache_file) if use_cache else {}
+    direct_packages = extract_direct_packages_from_lock(lock_data)
+    age_packages: Set[Tuple[str, str]]
+    if age_scope == "direct" and direct_packages:
+        age_packages = set(direct_packages)
+    else:
+        age_packages = set(packages)
 
     blocked = []
     quarantined = []
     allowed = []
     errors = []
+    age_checked_count = 0
 
     for name, version in packages:
         if is_allowlisted(name, allowlist):
@@ -188,7 +224,18 @@ def main() -> int:
             )
             continue
 
+        if (name, version) not in age_packages:
+            allowed.append(
+                {
+                    "name": name,
+                    "version": version,
+                    "reason": "age_scope_excluded",
+                }
+            )
+            continue
+
         try:
+            age_checked_count += 1
             published_at = get_publish_time(name, version, cache, use_cache, http_timeout_seconds)
             age_hours = compute_age_hours(published_at)
 
@@ -246,11 +293,13 @@ def main() -> int:
     result = {
         "status": status,
         "mode": "denylist_only" if denylist_only_mode else "full",
+        "age_scope": age_scope,
         "lockfile": lockfile,
         "policy_file": POLICY_FILE,
         "cache_file": cache_file if use_cache else "",
         "summary": {
             "total_packages": len(packages),
+            "age_checked_count": age_checked_count,
             "blocked_count": len(blocked),
             "quarantined_count": len(quarantined),
             "allowed_count": len(allowed),

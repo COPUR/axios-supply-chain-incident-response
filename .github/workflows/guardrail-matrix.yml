@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "17 2 * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -41,9 +43,17 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Restore guardrail metadata cache
+        uses: actions/cache@v4
+        with:
+          path: .guardrail-cache
+          key: guardrail-npm-metadata-${{ runner.os }}-${{ hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json', 'policies/guardrail-policy.json') }}
+          restore-keys: |
+            guardrail-npm-metadata-${{ runner.os }}-
+
       - name: Run lockfile matrix guardrail
         env:
-          MODE: ${{ github.event.inputs.mode || 'denylist-only' }}
+          MODE: ${{ github.event_name == 'schedule' && 'full' || github.event.inputs.mode || 'denylist-only' }}
           SCAN_ROOTS: ${{ github.event.inputs.scan_roots || '.' }}
           EXIT_POLICY: ${{ github.event.inputs.exit_policy || 'all' }}
         run: |
@@ -57,12 +67,16 @@ jobs:
             --http-timeout-seconds 10
             --runner-timeout-seconds 240
             --exit-on "${EXIT_POLICY}"
+            --age-scope all
             --exclude-substring "/.runtime/"
             --exclude-substring "/.npm-cache/"
           )
 
           if [ "${MODE}" = "denylist-only" ]; then
             args+=(--denylist-only)
+          else
+            # Full mode is kept practical by evaluating age policy on direct dependencies.
+            args+=(--age-scope direct)
           fi
 
           python3 scripts/run_guardrail_matrix.py "${args[@]}"

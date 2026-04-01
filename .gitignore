@@ -9,3 +9,11 @@ venv/
 guardrail-result.json
 scan-report.json
 scan-report.md
+.guardrail-cache/
+guardrail-run-*/
+guardrail-ci-output/
+guardrail-matrix-output/
+all-lockfiles.txt
+all-lockfiles-filtered.txt
+local-*-report.json
+local-*-report.md

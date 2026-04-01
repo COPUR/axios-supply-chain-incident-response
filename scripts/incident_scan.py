@@ -95,10 +95,15 @@ class ProjectFinding:
 @dataclass
 class ScanResult:
     affected: bool
+    affected_basis: str
     confidence: str
     evidence: List[str]
+    direct_compromise_evidence: List[str]
+    uncertainty_evidence: List[str]
     risk_level: str
     impacted_projects: List[ProjectFinding]
+    direct_impacted_projects: List[ProjectFinding]
+    uncertainty_impacted_projects: List[ProjectFinding]
     ci_pipelines_with_npm_install: List[str]
     probable_secret_exposures: List[str]
     lateral_movement_paths: List[str]
@@ -327,32 +332,44 @@ def infer_lateral_paths(
 
 
 def infer_production_exposure(
-    impacted_projects: List[ProjectFinding], ci_hits: List[str], secret_hits: List[str]
+    direct_impacted_projects: List[ProjectFinding],
+    uncertainty_impacted_projects: List[ProjectFinding],
+    ci_hits: List[str],
+    secret_hits: List[str],
 ) -> str:
-    if impacted_projects and ci_hits and secret_hits:
+    if direct_impacted_projects and ci_hits and secret_hits:
         return "Critical"
-    if impacted_projects and ci_hits:
+    if direct_impacted_projects and ci_hits:
         return "High"
-    if impacted_projects:
+    if direct_impacted_projects:
+        return "Medium"
+    if uncertainty_impacted_projects and ci_hits and secret_hits:
+        return "High"
+    if uncertainty_impacted_projects:
         return "Medium"
     return "Low"
 
 
 def compute_risk_level(
     direct_iocs: List[str],
-    impacted_projects: List[ProjectFinding],
+    direct_impacted_projects: List[ProjectFinding],
+    uncertainty_impacted_projects: List[ProjectFinding],
     ci_hits: List[str],
     secret_hits: List[str],
 ) -> str:
-    malicious_hit = any(
-        p.malicious_axios_versions or p.malicious_dependency_hits or p.plain_crypto_node_modules_present
-        for p in impacted_projects
-    )
-    uncertainty_hit = any(p.uncertainty_flags for p in impacted_projects)
+    malicious_hit = bool(direct_impacted_projects)
+    uncertainty_hit = bool(uncertainty_impacted_projects)
+    incident_signal = bool(direct_iocs or malicious_hit or uncertainty_hit)
+
+    if not incident_signal:
+        # Keep incident risk separate from baseline secret hygiene findings.
+        return "Low"
 
     if direct_iocs or (malicious_hit and ci_hits):
         return "Critical"
     if malicious_hit:
+        return "High"
+    if uncertainty_hit and ci_hits and secret_hits:
         return "High"
     if uncertainty_hit or secret_hits:
         return "Medium"
@@ -432,10 +449,19 @@ def build_preventive_measures() -> List[str]:
 
 def render_markdown(result: ScanResult) -> str:
     impacted_paths = [p.root for p in result.impacted_projects]
+    direct_impacted_paths = [p.root for p in result.direct_impacted_projects]
+    uncertainty_impacted_paths = [p.root for p in result.uncertainty_impacted_projects]
 
     evidence_lines = result.evidence[:] if result.evidence else ["No direct indicators found in scanned scope."]
+    evidence_lines.insert(0, f"affected_basis:{result.affected_basis}")
     if impacted_paths:
         evidence_lines.append(f"Impacted repositories: {', '.join(impacted_paths)}")
+    if direct_impacted_paths:
+        evidence_lines.append(f"Directly compromised repositories: {', '.join(direct_impacted_paths)}")
+    if uncertainty_impacted_paths:
+        evidence_lines.append(
+            f"Uncertainty-driven repositories (assumed compromised): {', '.join(uncertainty_impacted_paths)}"
+        )
     if result.ci_pipelines_with_npm_install:
         evidence_lines.append(
             "CI/CD pipelines with npm install/npm ci: " + ", ".join(result.ci_pipelines_with_npm_install)
@@ -449,7 +475,7 @@ def render_markdown(result: ScanResult) -> str:
     lines.append("## SECTION 1: Detection Result")
     lines.append("")
     lines.append(f"- Status: {'Affected' if result.affected else 'Not affected'}")
-    lines.append(f"- Evidence: Confidence={result.confidence}")
+    lines.append(f"- Evidence: Confidence={result.confidence}; Basis={result.affected_basis}")
     for item in evidence_lines:
         lines.append(f"  - {item}")
 
@@ -538,6 +564,17 @@ def run_scan(roots: List[Path]) -> ScanResult:
     direct_system_iocs = detect_system_iocs()
 
     impacted_projects = [p for p in project_findings if p.is_impacted()]
+    direct_impacted_projects = [
+        p
+        for p in impacted_projects
+        if p.malicious_axios_versions or p.malicious_dependency_hits or p.plain_crypto_node_modules_present
+    ]
+    uncertainty_impacted_projects = [
+        p
+        for p in impacted_projects
+        if p.uncertainty_flags
+        and not (p.malicious_axios_versions or p.malicious_dependency_hits or p.plain_crypto_node_modules_present)
+    ]
     ci_hits = find_ci_pipelines_with_npm(roots)
     secret_hits = hunt_probable_secrets(roots)
 
@@ -563,21 +600,62 @@ def run_scan(roots: List[Path]) -> ScanResult:
 
     affected = bool(
         direct_system_iocs
-        or any(p.malicious_axios_versions or p.malicious_dependency_hits or p.plain_crypto_node_modules_present for p in project_findings)
-        or any(p.uncertainty_flags for p in project_findings)
+        or direct_impacted_projects
+        or uncertainty_impacted_projects
+    )
+
+    if direct_system_iocs or direct_impacted_projects:
+        affected_basis = "direct_compromise_detected"
+    elif uncertainty_impacted_projects:
+        affected_basis = "assumed_compromise_due_to_uncertainty"
+    else:
+        affected_basis = "no_compromise_indicators"
+
+    direct_compromise_evidence = sorted(
+        {
+            item
+            for item in evidence
+            if item.startswith("ioc_file_present:")
+            or item.startswith("malicious_axios:")
+            or item.startswith("malicious_dependency:")
+            or item.startswith("plain_crypto_js_present:")
+        }
+    )
+    uncertainty_evidence = sorted(
+        {
+            item
+            for item in evidence
+            if item.startswith("uncertainty:") or item.startswith("scan_error:")
+        }
     )
 
     confidence = compute_confidence(affected, direct_system_iocs, project_findings, scan_errors)
-    risk_level = compute_risk_level(direct_system_iocs, project_findings, ci_hits, secret_hits)
+    risk_level = compute_risk_level(
+        direct_system_iocs,
+        direct_impacted_projects,
+        uncertainty_impacted_projects,
+        ci_hits,
+        secret_hits,
+    )
     lateral_paths = infer_lateral_paths(impacted_projects, ci_hits, secret_hits)
-    production_risk = infer_production_exposure(impacted_projects, ci_hits, secret_hits)
+    production_risk = infer_production_exposure(
+        direct_impacted_projects,
+        uncertainty_impacted_projects,
+        ci_hits,
+        secret_hits,
+    )
 
     return ScanResult(
         affected=affected,
+        affected_basis=affected_basis,
         confidence=confidence,
         evidence=sorted(set(evidence)),
+        direct_compromise_evidence=direct_compromise_evidence,
+        uncertainty_evidence=uncertainty_evidence,
         risk_level=risk_level,
         impacted_projects=impacted_projects,
+        direct_impacted_projects=direct_impacted_projects,
+        uncertainty_impacted_projects=uncertainty_impacted_projects,
         ci_pipelines_with_npm_install=ci_hits,
         probable_secret_exposures=secret_hits,
         lateral_movement_paths=lateral_paths,

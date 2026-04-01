@@ -24,6 +24,11 @@ The scanner prints a report in this format:
 - SECTION 4: Remediation Plan
 - SECTION 5: Preventive Measures
 
+The JSON output also includes:
+- `affected_basis` (`direct_compromise_detected`, `assumed_compromise_due_to_uncertainty`, `no_compromise_indicators`)
+- `direct_compromise_evidence`
+- `uncertainty_evidence`
+
 ## Repository Layout
 
 ```text
@@ -88,13 +93,24 @@ python3 scripts/run_guardrail_matrix.py \
   --roots /path/to/repos \
   --output-dir guardrail-matrix-output \
   --policy-file policies/guardrail-policy.json \
-  --cache-file /tmp/guardrail-npm-metadata-cache.json
+  --cache-file /tmp/guardrail-npm-metadata-cache.json \
+  --age-scope direct
 ```
 
 Artifacts:
 - `summary.csv`
 - `summary.json`
 - `results/*.json` (one per lockfile)
+
+Performance note:
+- `full` mode can be expensive on large lockfiles if age policy is evaluated for every transitive package.
+- Use `--age-scope direct` for practical CI execution while keeping denylist checks on all resolved packages.
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests -p "test_*.py" -v
+```
 
 ## Security Principles
 
