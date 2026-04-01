@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Set, Tuple
@@ -76,18 +77,36 @@ def is_allowlisted(name: str, allowlist: List[str]) -> bool:
     return False
 
 
-def fetch_npm_metadata(pkg_name: str) -> Dict[str, Any]:
-    url = f"https://registry.npmjs.org/{pkg_name}"
+def fetch_npm_metadata(
+    pkg_name: str,
+    cache: Dict[str, Dict[str, Any]],
+    use_cache: bool,
+    http_timeout_seconds: int,
+) -> Dict[str, Any]:
+    if use_cache and pkg_name in cache:
+        return cache[pkg_name]
+
+    encoded_name = urllib.parse.quote(pkg_name, safe="")
+    url = f"https://registry.npmjs.org/{encoded_name}"
     req = urllib.request.Request(
         url,
         headers={"Accept": "application/json", "User-Agent": "guardrail-agent/1.0"},
     )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    with urllib.request.urlopen(req, timeout=http_timeout_seconds) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+        if use_cache:
+            cache[pkg_name] = payload
+        return payload
 
 
-def get_publish_time(pkg_name: str, version: str) -> str:
-    meta = fetch_npm_metadata(pkg_name)
+def get_publish_time(
+    pkg_name: str,
+    version: str,
+    cache: Dict[str, Dict[str, Any]],
+    use_cache: bool,
+    http_timeout_seconds: int,
+) -> str:
+    meta = fetch_npm_metadata(pkg_name, cache, use_cache, http_timeout_seconds)
     times = meta.get("time", {})
     published = times.get(version)
     if not published:
@@ -101,6 +120,34 @@ def compute_age_hours(published_at: str) -> float:
     return delta.total_seconds() / 3600.0
 
 
+def is_truthy(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def load_cache(cache_file: str) -> Dict[str, Dict[str, Any]]:
+    if not os.path.exists(cache_file):
+        return {}
+
+    try:
+        with open(cache_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    return {}
+
+
+def save_cache(cache_file: str, cache: Dict[str, Dict[str, Any]]) -> None:
+    parent = os.path.dirname(cache_file)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+    with open(cache_file, "w", encoding="utf-8") as f:
+        json.dump(cache, f)
+
+
 def main() -> int:
     policy = load_json(POLICY_FILE)
     lockfile = find_lockfile()
@@ -111,6 +158,11 @@ def main() -> int:
     allowlist: List[str] = policy.get("allowlist", [])
     min_age = int(policy.get("min_package_age_hours", 48))
     strict_mode = bool(policy.get("strict_mode", True))
+    denylist_only_mode = is_truthy(os.environ.get("GUARDRAIL_DENYLIST_ONLY", ""))
+    use_cache = not is_truthy(os.environ.get("GUARDRAIL_DISABLE_CACHE", ""))
+    cache_file = os.environ.get("GUARDRAIL_CACHE_FILE", ".guardrail-npm-metadata-cache.json")
+    http_timeout_seconds = int(os.environ.get("GUARDRAIL_HTTP_TIMEOUT_SECONDS", "10"))
+    cache: Dict[str, Dict[str, Any]] = load_cache(cache_file) if use_cache else {}
 
     blocked = []
     quarantined = []
@@ -126,8 +178,18 @@ def main() -> int:
             blocked.append({"name": name, "version": version, "reason": "denylisted_version"})
             continue
 
+        if denylist_only_mode:
+            allowed.append(
+                {
+                    "name": name,
+                    "version": version,
+                    "reason": "denylist_only_mode",
+                }
+            )
+            continue
+
         try:
-            published_at = get_publish_time(name, version)
+            published_at = get_publish_time(name, version, cache, use_cache, http_timeout_seconds)
             age_hours = compute_age_hours(published_at)
 
             if age_hours < min_age:
@@ -183,8 +245,10 @@ def main() -> int:
 
     result = {
         "status": status,
+        "mode": "denylist_only" if denylist_only_mode else "full",
         "lockfile": lockfile,
         "policy_file": POLICY_FILE,
+        "cache_file": cache_file if use_cache else "",
         "summary": {
             "total_packages": len(packages),
             "blocked_count": len(blocked),
@@ -200,6 +264,9 @@ def main() -> int:
 
     with open(RESULT_FILE, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
+
+    if use_cache:
+        save_cache(cache_file, cache)
 
     print(json.dumps(result["summary"], indent=2))
 

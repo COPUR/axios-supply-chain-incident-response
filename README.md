@@ -31,6 +31,7 @@ The scanner prints a report in this format:
 ├── scripts/
 │   ├── incident_scan.py
 │   ├── guardrail.py
+│   ├── run_guardrail_matrix.py
 │   └── publish_guardrail_event.py
 ├── agent/
 │   └── security_agent.py
@@ -42,7 +43,8 @@ The scanner prints a report in this format:
 ├── k8s/
 │   └── security-agent-deployment.yaml
 └── .github/workflows/
-    └── dependency-guardrail.yml
+    ├── dependency-guardrail.yml
+    └── guardrail-matrix.yml
 ```
 
 ## Detection Scope
@@ -66,6 +68,33 @@ Behavior:
 - Denylisted package/version -> **block** (non-zero exit)
 - Very new package (< policy threshold) -> **quarantine**
 - Otherwise -> **allow**
+
+## Multi-Repo Lockfile Guardrail
+
+Run per-lockfile guardrail checks in one command:
+
+```bash
+python3 scripts/run_guardrail_matrix.py \
+  --roots /path/to/repos \
+  --output-dir guardrail-matrix-output \
+  --policy-file policies/guardrail-policy.json \
+  --denylist-only
+```
+
+For full mode with cache and age checks:
+
+```bash
+python3 scripts/run_guardrail_matrix.py \
+  --roots /path/to/repos \
+  --output-dir guardrail-matrix-output \
+  --policy-file policies/guardrail-policy.json \
+  --cache-file /tmp/guardrail-npm-metadata-cache.json
+```
+
+Artifacts:
+- `summary.csv`
+- `summary.json`
+- `results/*.json` (one per lockfile)
 
 ## Security Principles
 

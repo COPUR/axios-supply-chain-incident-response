@@ -1,0 +1,75 @@
+name: guardrail-matrix
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Guardrail mode"
+        required: true
+        default: "denylist-only"
+        type: choice
+        options:
+          - "denylist-only"
+          - "full"
+      scan_roots:
+        description: "Space-separated root paths to scan"
+        required: true
+        default: "."
+      exit_policy:
+        description: "Pipeline fail policy"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - "all"
+          - "block-only"
+
+jobs:
+  guardrail-matrix:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run lockfile matrix guardrail
+        env:
+          MODE: ${{ github.event.inputs.mode || 'denylist-only' }}
+          SCAN_ROOTS: ${{ github.event.inputs.scan_roots || '.' }}
+          EXIT_POLICY: ${{ github.event.inputs.exit_policy || 'all' }}
+        run: |
+          set -euo pipefail
+          args=(
+            --roots ${SCAN_ROOTS}
+            --output-dir guardrail-ci-output
+            --policy-file policies/guardrail-policy.json
+            --guardrail-script scripts/guardrail.py
+            --cache-file .guardrail-cache/npm-metadata.json
+            --http-timeout-seconds 10
+            --runner-timeout-seconds 240
+            --exit-on "${EXIT_POLICY}"
+            --exclude-substring "/.runtime/"
+            --exclude-substring "/.npm-cache/"
+          )
+
+          if [ "${MODE}" = "denylist-only" ]; then
+            args+=(--denylist-only)
+          fi
+
+          python3 scripts/run_guardrail_matrix.py "${args[@]}"
+
+      - name: Upload guardrail matrix artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guardrail-matrix-output
+          path: guardrail-ci-output
