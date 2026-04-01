@@ -1,9 +1,10 @@
-FROM python:3.11-slim
+FROM node:20-alpine
 
 WORKDIR /app
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts
 
-COPY agent/security_agent.py /app/security_agent.py
+COPY src ./src
+COPY agent ./agent
 
-CMD ["python3", "/app/security_agent.py"]
+CMD ["node", "/app/agent/security-agent.js"]

@@ -6,15 +6,17 @@ Zero-trust response toolkit for the axios supply chain incident involving:
 - malicious dependency `plain-crypto-js@4.2.1`
 
 This repository provides:
-- Full detection scan with **action-oriented report output**
+- Full detection scan with action-oriented report output
 - Impact analysis (repos, CI/CD, potential secret exposure)
 - Strict remediation runbook (assume compromise when uncertain)
 - Preventive guardrails for CI/CD and runtime operations
+- Node.js-first tooling with TDD and coverage gates
 
 ## Quick Start
 
 ```bash
-python3 scripts/incident_scan.py --roots /path/to/repos --output report.md --json-out report.json
+npm ci --ignore-scripts
+npm run scan -- --roots /path/to/repos --output report.md --json-out report.json
 ```
 
 Output hygiene:
@@ -37,13 +39,20 @@ The JSON output also includes:
 
 ```text
 .
+├── src/lib/
+│   ├── anonymize.js
+│   ├── guardrail-core.js
+│   ├── incident-scan-core.js
+│   ├── lockfile-utils.js
+│   ├── matrix-core.js
+│   └── security-events.js
 ├── scripts/
-│   ├── incident_scan.py
-│   ├── guardrail.py
-│   ├── run_guardrail_matrix.py
-│   └── publish_guardrail_event.py
+│   ├── incident-scan.js
+│   ├── guardrail.js
+│   ├── run-guardrail-matrix.js
+│   └── publish-guardrail-event.js
 ├── agent/
-│   └── security_agent.py
+│   └── security-agent.js
 ├── policies/
 │   └── guardrail-policy.json
 ├── docs/
@@ -51,10 +60,12 @@ The JSON output also includes:
 │   └── remediation-runbook.md
 ├── k8s/
 │   └── security-agent-deployment.yaml
+├── tests/
+│   └── *.test.js
 └── .github/workflows/
     ├── dependency-guardrail.yml
     ├── guardrail-matrix.yml
-    └── python-tests.yml
+    └── node-tests.yml
 ```
 
 ## Detection Scope
@@ -71,20 +82,20 @@ The detector checks:
 ## CI Guardrail
 
 ```bash
-python3 scripts/guardrail.py
+npm run guardrail
 ```
 
 Behavior:
-- Denylisted package/version -> **block** (non-zero exit)
-- Very new package (< policy threshold) -> **quarantine**
-- Otherwise -> **allow**
+- Denylisted package/version -> block (non-zero exit)
+- Very new package (< policy threshold) -> quarantine
+- Otherwise -> allow
 
 ## Multi-Repo Lockfile Guardrail
 
 Run per-lockfile guardrail checks in one command:
 
 ```bash
-python3 scripts/run_guardrail_matrix.py \
+npm run guardrail:matrix -- \
   --roots /path/to/repos \
   --output-dir guardrail-matrix-output \
   --policy-file policies/guardrail-policy.json \
@@ -94,7 +105,7 @@ python3 scripts/run_guardrail_matrix.py \
 For full mode with cache and age checks:
 
 ```bash
-python3 scripts/run_guardrail_matrix.py \
+npm run guardrail:matrix -- \
   --roots /path/to/repos \
   --output-dir guardrail-matrix-output \
   --policy-file policies/guardrail-policy.json \
@@ -116,11 +127,27 @@ Performance note:
 - `full` mode can be expensive on large lockfiles if age policy is evaluated for every transitive package.
 - Use `--age-scope direct` for practical CI execution while keeping denylist checks on all resolved packages.
 
-## Tests
+## Security Event Pipeline
+
+Publish guardrail events:
 
 ```bash
-python3 -m unittest discover -s tests -p "test_*.py" -v
+npm run publish:guardrail-event
 ```
+
+Run incident agent:
+
+```bash
+npm run agent:start
+```
+
+## Tests (TDD)
+
+```bash
+npm test
+```
+
+Coverage gates are enforced at `95%+` globally for statements, lines, and branches.
 
 ## Security Principles
 

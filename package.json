@@ -1,0 +1,27 @@
+{
+  "name": "axios-supply-chain-incident-response-kit",
+  "version": "2.0.0",
+  "private": false,
+  "description": "Zero-trust incident response toolkit for npm supply-chain attacks",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "vitest run --coverage",
+    "test:watch": "vitest",
+    "scan": "node scripts/incident-scan.js",
+    "guardrail": "node scripts/guardrail.js",
+    "guardrail:matrix": "node scripts/run-guardrail-matrix.js",
+    "publish:guardrail-event": "node scripts/publish-guardrail-event.js",
+    "agent:start": "node agent/security-agent.js"
+  },
+  "dependencies": {
+    "kafkajs": "2.2.4",
+    "yargs": "17.7.2"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "2.1.8",
+    "vitest": "2.1.8"
+  }
+}

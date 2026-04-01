@@ -38,10 +38,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          python-version: "3.11"
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies (no lifecycle scripts)
+        run: npm ci --ignore-scripts
 
       - name: Restore guardrail metadata cache
         uses: actions/cache@v4
@@ -62,7 +66,7 @@ jobs:
             --roots ${SCAN_ROOTS}
             --output-dir guardrail-ci-output
             --policy-file policies/guardrail-policy.json
-            --guardrail-script scripts/guardrail.py
+            --guardrail-script scripts/guardrail.js
             --cache-file .guardrail-cache/npm-metadata.json
             --http-timeout-seconds 10
             --runner-timeout-seconds 240
@@ -79,7 +83,7 @@ jobs:
             args+=(--age-scope direct)
           fi
 
-          python3 scripts/run_guardrail_matrix.py "${args[@]}"
+          node scripts/run-guardrail-matrix.js "${args[@]}"
 
       - name: Upload guardrail matrix artifacts
         if: always()
